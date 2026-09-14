@@ -7,9 +7,13 @@ A compact, browser-based dynamic geometry workspace inspired by classic construc
 ## What it can do
 
 - Construct free points, segments, infinite lines, circles, and polygons
+- Create a linked square from any side with two clicks
 - Add midpoints, perpendicular lines, and intersection points
+- Find a segment midpoint with one click, or choose any two points
 - Drag free points while preserving construction dependencies
+- Hold Alt while dragging a linked point to lock rotation to 15°, 30°, 45°, or 90° increments
 - Inspect lengths, radii, areas, and point coordinates
+- Hide and restore individual construction objects
 - Toggle the grid, half-unit snapping, and labels
 - Undo and redo up to 50 changes
 - Save automatically in the browser

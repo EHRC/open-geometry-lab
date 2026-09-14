@@ -5,6 +5,8 @@ import {
   Compass,
   CornerDownRight,
   Download,
+  Eye,
+  EyeOff,
   Grid3X3,
   Import,
   Link2,
@@ -19,22 +21,26 @@ import {
   Save,
   Slash,
   Sparkles,
+  Square,
   Trash2,
   Undo2,
   X,
 } from 'lucide-react';
 import {
+  ANGLE_STEPS,
   emptyDocument,
   nextPointName,
   removeWithDependents,
+  rotationAnchorId,
   sampleDocument,
+  snapPointToAngle,
   validateDocument,
 } from './model.js';
 
 const STORAGE_KEY = 'open-geometry-lab:document:v1';
 const COLORS = ['#16718a', '#d6533c', '#7952a8', '#d18a1d', '#287a55', '#343b42'];
 const curveTypes = new Set(['segment', 'line', 'circle', 'perpendicular', 'circumcircle']);
-const pointTypes = new Set(['point', 'midpoint', 'intersection']);
+const pointTypes = new Set(['point', 'midpoint', 'intersection', 'squareVertex']);
 
 const TOOLS = [
   { id: 'select', label: 'Select and move', icon: MousePointer2 },
@@ -43,6 +49,7 @@ const TOOLS = [
   { id: 'line', label: 'Infinite line', icon: Slash },
   { id: 'circle', label: 'Circle by center and point', icon: Circle },
   { id: 'polygon', label: 'Polygon', icon: Pentagon },
+  { id: 'square', label: 'Square by side', icon: Square },
   { id: 'midpoint', label: 'Midpoint', icon: Link2 },
   { id: 'perpendicular', label: 'Perpendicular line', icon: CornerDownRight },
   { id: 'intersection', label: 'Intersection point', icon: X },
@@ -119,6 +126,7 @@ function App() {
   const toolRef = useRef(tool);
   const pendingRef = useRef(pending);
   const selectedRef = useRef(selectedId);
+  const altPressedRef = useRef(false);
   const handlerRef = useRef(null);
   const importRef = useRef(null);
 
@@ -153,6 +161,43 @@ function App() {
         return;
       }
       const count = documentRef.current.entities.filter((entity) => entity.type === type).length + 1;
+      if (type === 'square') {
+        const squareId = crypto.randomUUID();
+        const baseEntities = [...documentRef.current.entities, ...extraEntities];
+        const endVertex = {
+          id: crypto.randomUUID(),
+          type: 'squareVertex',
+          name: nextPointName(baseEntities),
+          pointIds: [chosen[0], pointId],
+          corner: 'end',
+          ownerId: squareId,
+          color: '#d6533c',
+        };
+        const startVertex = {
+          id: crypto.randomUUID(),
+          type: 'squareVertex',
+          name: nextPointName([...baseEntities, endVertex]),
+          pointIds: [chosen[0], pointId],
+          corner: 'start',
+          ownerId: squareId,
+          color: '#d6533c',
+        };
+        const square = {
+          id: squareId,
+          type: 'square',
+          name: `Q${count}`,
+          pointIds: [chosen[0], pointId, endVertex.id, startVertex.id],
+          color: '#16718a',
+        };
+        commit((doc) => ({
+          ...doc,
+          entities: [...doc.entities, ...extraEntities, endVertex, startVertex, square],
+        }));
+        setPending([]);
+        setSelectedId(square.id);
+        setStatus('Square created');
+        return;
+      }
       const prefixes = { segment: 's', line: 'l', circle: 'c', midpoint: 'M' };
       const entity = {
         id: crypto.randomUUID(),
@@ -212,6 +257,31 @@ function App() {
       return;
     }
 
+    if (
+      activeTool === 'midpoint'
+      && hitEntity
+      && ['segment', 'polygon', 'square'].includes(hitEntity.type)
+    ) {
+      const pointIds = hitObject.__pointIds
+        ?? (hitEntity.type === 'segment' ? hitEntity.pointIds : null);
+      if (!pointIds) {
+        setStatus('Choose a side');
+        return;
+      }
+      const entity = {
+        id: crypto.randomUUID(),
+        type: 'midpoint',
+        name: nextPointName(entities),
+        pointIds,
+        color: '#d18a1d',
+      };
+      commit((doc) => ({ ...doc, entities: [...doc.entities, entity] }));
+      setPending([]);
+      setSelectedId(entity.id);
+      setStatus('Midpoint created');
+      return;
+    }
+
     if (activeTool === 'perpendicular' && !pendingRef.current.length) {
       if (!hitEntity || !['segment', 'line', 'perpendicular'].includes(hitEntity.type)) {
         setStatus('Choose a line');
@@ -247,7 +317,7 @@ function App() {
       return;
     }
 
-    if (['segment', 'line', 'circle', 'midpoint'].includes(activeTool)) {
+    if (['segment', 'line', 'circle', 'square', 'midpoint'].includes(activeTool)) {
       addPairEntity(activeTool, pointId, additions);
       return;
     }
@@ -342,12 +412,16 @@ function App() {
       for (let index = unresolved.length - 1; index >= 0; index -= 1) {
         const entity = unresolved[index];
         const color = entity.color || '#16718a';
+        const owner = entity.ownerId
+          ? construction.entities.find((item) => item.id === entity.ownerId)
+          : null;
         const common = {
           name: construction.settings.labels ? entity.name : '',
           withLabel: construction.settings.labels,
           strokeColor: selectedRef.current === entity.id ? '#d6533c' : color,
           highlightStrokeColor: '#d6533c',
           strokeWidth: selectedRef.current === entity.id ? 3 : 2,
+          visible: entity.visible !== false && owner?.visible !== false,
           label: { color: '#23292d', offset: [9, -12], fontSize: 13 },
         };
         const points = entity.pointIds?.map((id) => objectsRef.current[id]);
@@ -366,6 +440,20 @@ function App() {
               snapSizeX: 0.5,
               snapSizeY: 0.5,
             });
+            let angleLocked = false;
+            object.on('drag', (event) => {
+              if (!(event?.altKey || altPressedRef.current)) return;
+              const anchorId = rotationAnchorId(documentRef.current.entities, entity.id);
+              const anchor = anchorId ? objectsRef.current[anchorId] : null;
+              if (!anchor) return;
+              const next = snapPointToAngle(
+                [anchor.X(), anchor.Y()],
+                [object.X(), object.Y()],
+                documentRef.current.settings.angleStep,
+              );
+              object.setPosition(JXG.COORDS_BY_USER, next);
+              angleLocked = true;
+            });
             object.on('up', () => {
               const x = object.X();
               const y = object.Y();
@@ -375,14 +463,34 @@ function App() {
                   item.id === entity.id ? { ...item, x, y } : item,
                 ),
               }));
+              if (angleLocked) {
+                setStatus(`Angle locked to ${documentRef.current.settings.angleStep}°`);
+                angleLocked = false;
+              }
             });
+          } else if (entity.type === 'squareVertex' && points?.every(Boolean)) {
+            const [start, end] = points;
+            const atEnd = entity.corner === 'end';
+            object = board.create(
+              'point',
+              [
+                () => (atEnd ? end.X() : start.X()) - (end.Y() - start.Y()),
+                () => (atEnd ? end.Y() : start.Y()) + (end.X() - start.X()),
+              ],
+              {
+                ...common,
+                size: 3.5,
+                fillColor: color,
+                fixed: true,
+              },
+            );
           } else if (entity.type === 'segment' && points?.every(Boolean)) {
             object = board.create('segment', points, common);
           } else if (entity.type === 'line' && points?.every(Boolean)) {
             object = board.create('line', points, common);
           } else if (entity.type === 'circle' && points?.every(Boolean)) {
             object = board.create('circle', points, { ...common, fillOpacity: 0 });
-          } else if (entity.type === 'polygon' && points?.every(Boolean)) {
+          } else if (['polygon', 'square'].includes(entity.type) && points?.every(Boolean)) {
             object = board.create('polygon', points, {
               ...common,
               fillColor: color,
@@ -420,8 +528,12 @@ function App() {
         }
         if (object) {
           object.__entityId = entity.id;
-          object.borders?.forEach((border) => {
+          object.borders?.forEach((border, borderIndex) => {
             border.__entityId = entity.id;
+            border.__pointIds = [
+              entity.pointIds[borderIndex],
+              entity.pointIds[(borderIndex + 1) % entity.pointIds.length],
+            ];
           });
           objectsRef.current[entity.id] = object;
           unresolved.splice(index, 1);
@@ -445,6 +557,7 @@ function App() {
 
   useEffect(() => {
     const onKey = (event) => {
+      if (event.key === 'Alt') altPressedRef.current = true;
       const editable = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
       if (editable) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
@@ -463,8 +576,20 @@ function App() {
         if (keys[event.key.toLowerCase()]) changeTool(keys[event.key.toLowerCase()]);
       }
     };
+    const onKeyUp = (event) => {
+      if (event.key === 'Alt') altPressedRef.current = false;
+    };
+    const onBlur = () => {
+      altPressedRef.current = false;
+    };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
   }, [changeTool, redo, removeSelected, undo]);
 
   const selected = construction.entities.find((entity) => entity.id === selectedId);
@@ -474,7 +599,7 @@ function App() {
     try {
       if (selected.type === 'segment') return `Length ${object.L().toFixed(3)}`;
       if (['circle', 'circumcircle'].includes(selected.type)) return `Radius ${object.Radius().toFixed(3)}`;
-      if (selected.type === 'polygon') return `Area ${object.Area().toFixed(3)}`;
+      if (['polygon', 'square'].includes(selected.type)) return `Area ${object.Area().toFixed(3)}`;
       if (pointTypes.has(selected.type)) return `(${object.X().toFixed(3)}, ${object.Y().toFixed(3)})`;
     } catch {
       return null;
@@ -525,6 +650,21 @@ function App() {
 
   const setSetting = (key) => {
     commit((doc) => ({ ...doc, settings: { ...doc.settings, [key]: !doc.settings[key] } }));
+  };
+
+  const setAngleStep = (angleStep) => {
+    commit((doc) => ({ ...doc, settings: { ...doc.settings, angleStep } }));
+  };
+
+  const toggleVisibility = (id) => {
+    const entity = documentRef.current.entities.find((item) => item.id === id);
+    commit((doc) => ({
+      ...doc,
+      entities: doc.entities.map((entity) =>
+        entity.id === id ? { ...entity, visible: entity.visible === false } : entity,
+      ),
+    }));
+    setStatus(entity?.visible === false ? 'Object shown' : 'Object hidden');
   };
 
   const updateSelected = (changes) => {
@@ -602,6 +742,12 @@ function App() {
             <label className="switch-row"><span>Grid</span><input type="checkbox" checked={construction.settings.grid} onChange={() => setSetting('grid')} /></label>
             <label className="switch-row"><span>Snap to 0.5</span><input type="checkbox" checked={construction.settings.snap} onChange={() => setSetting('snap')} /></label>
             <label className="switch-row"><span>Labels</span><input type="checkbox" checked={construction.settings.labels} onChange={() => setSetting('labels')} /></label>
+            <label className="select-row">
+              <span>Alt angle</span>
+              <select value={construction.settings.angleStep} onChange={(event) => setAngleStep(Number(event.target.value))}>
+                {ANGLE_STEPS.map((step) => <option key={step} value={step}>{step}°</option>)}
+              </select>
+            </label>
           </section>
 
           <section className="inspector-section properties">
@@ -611,6 +757,7 @@ function App() {
                 <label className="field-label" htmlFor="element-name">Label</label>
                 <input id="element-name" className="field-input" value={selected.name} maxLength={32} onChange={(event) => updateSelected({ name: event.target.value })} />
                 {selectedMetric && <output className="measurement">{selectedMetric}</output>}
+                <label className="switch-row selection-visibility"><span>Visible</span><input type="checkbox" checked={selected.visible !== false} onChange={() => toggleVisibility(selected.id)} /></label>
                 <span className="field-label">Color</span>
                 <div className="swatches" aria-label="Element color">
                   {COLORS.map((color) => (
@@ -627,11 +774,16 @@ function App() {
             <div className="section-heading"><span>Construction</span><span>{construction.entities.length}</span></div>
             <div className="entity-list">
               {construction.entities.map((entity) => (
-                <button key={entity.id} className={selectedId === entity.id ? 'selected' : ''} onClick={() => { setSelectedId(entity.id); changeTool('select'); }}>
-                  <span className="entity-color" style={{ '--entity-color': entity.color }} />
-                  <span className="entity-name">{entity.name || 'Unnamed'}</span>
-                  <span className="entity-kind">{entity.type}</span>
-                </button>
+                <div key={entity.id} className={`entity-row ${selectedId === entity.id ? 'selected' : ''} ${entity.visible === false ? 'hidden' : ''}`}>
+                  <button className="entity-select" onClick={() => { setSelectedId(entity.id); changeTool('select'); }}>
+                    <span className="entity-color" style={{ '--entity-color': entity.color }} />
+                    <span className="entity-name">{entity.name || 'Unnamed'}</span>
+                    <span className="entity-kind">{entity.type === 'squareVertex' ? 'square vertex' : entity.type}</span>
+                  </button>
+                  <button className="visibility-button" title={entity.visible === false ? 'Show object' : 'Hide object'} aria-label={`${entity.visible === false ? 'Show' : 'Hide'} ${entity.name || entity.type}`} onClick={() => toggleVisibility(entity.id)}>
+                    {entity.visible === false ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
               ))}
               {!construction.entities.length && <div className="empty-list">Empty construction</div>}
             </div>
