@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  dependentIds,
   emptyDocument,
+  nearestPointId,
   nextPointName,
   removeWithDependents,
   rotationAnchorId,
@@ -28,6 +30,9 @@ describe('construction model', () => {
     const entities = sampleDocument().entities;
     const remaining = removeWithDependents(entities, 'p-a');
     expect(remaining.map((entity) => entity.id)).toEqual(['p-b', 'p-c']);
+    expect([...dependentIds(entities, 'p-a')].sort()).toEqual(
+      ['p-a', 'mid-1', 'circum-1', 'poly-1'].sort(),
+    );
   });
 
   it('generates readable point labels', () => {
@@ -38,7 +43,19 @@ describe('construction model', () => {
   it('normalizes legacy documents with the default angle step', () => {
     const legacy = sampleDocument();
     delete legacy.settings.angleStep;
+    delete legacy.settings.snapPoints;
     expect(validateDocument(legacy).settings.angleStep).toBe(15);
+    expect(validateDocument(legacy).settings.snapPoints).toBe(true);
+  });
+
+  it('finds only points inside the magnetic snap radius', () => {
+    const points = [
+      { id: 'a', x: 0, y: 0 },
+      { id: 'b', x: 3, y: 3 },
+    ];
+    expect(nearestPointId(points, [0.1, 0.1], 0.25)).toBe('a');
+    expect(nearestPointId(points, [0.1, 0.1], 0.25, 'a')).toBeNull();
+    expect(nearestPointId(points, [1, 1], 0.25)).toBeNull();
   });
 
   it('snaps rotation to the selected angular increment', () => {

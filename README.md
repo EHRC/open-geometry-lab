@@ -15,6 +15,7 @@ A compact, browser-based dynamic geometry workspace inspired by classic construc
 - Inspect lengths, radii, areas, and point coordinates
 - Hide and restore individual construction objects
 - Toggle the grid, half-unit snapping, and labels
+- Snap new or dragged geometry to nearby visible points
 - Undo and redo up to 50 changes
 - Save automatically in the browser
 - Import and export construction files as JSON

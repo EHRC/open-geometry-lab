@@ -19,13 +19,13 @@ export const emptyDocument = () => ({
   version: DOCUMENT_VERSION,
   title: 'Untitled construction',
   entities: [],
-  settings: { grid: true, snap: false, labels: true, angleStep: 15 },
+  settings: { grid: true, snap: false, snapPoints: true, labels: true, angleStep: 15 },
 });
 
 export const sampleDocument = () => ({
   version: DOCUMENT_VERSION,
   title: 'Triangle study',
-  settings: { grid: true, snap: false, labels: true, angleStep: 15 },
+  settings: { grid: true, snap: false, snapPoints: true, labels: true, angleStep: 15 },
   entities: [
     { id: 'p-a', type: 'point', name: 'A', x: -3.4, y: -2.1, color: '#d6533c' },
     { id: 'p-b', type: 'point', name: 'B', x: 3.1, y: -2.1, color: '#d6533c' },
@@ -62,6 +62,11 @@ export function dependencyIds(entity) {
 }
 
 export function removeWithDependents(entities, rootId) {
+  const removed = dependentIds(entities, rootId);
+  return entities.filter((entity) => !removed.has(entity.id));
+}
+
+export function dependentIds(entities, rootId) {
   const removed = new Set([rootId]);
   let changed = true;
   while (changed) {
@@ -73,7 +78,7 @@ export function removeWithDependents(entities, rootId) {
       }
     }
   }
-  return entities.filter((entity) => !removed.has(entity.id));
+  return removed;
 }
 
 export function nextPointName(entities) {
@@ -93,6 +98,25 @@ export function snapPointToAngle(anchor, point, stepDegrees) {
   const step = (stepDegrees * Math.PI) / 180;
   const angle = Math.round(Math.atan2(dy, dx) / step) * step;
   return [anchor[0] + radius * Math.cos(angle), anchor[1] + radius * Math.sin(angle)];
+}
+
+export function nearestPointId(points, target, tolerance, excludeIds = null) {
+  const excluded = new Set(
+    Array.isArray(excludeIds) || excludeIds instanceof Set
+      ? excludeIds
+      : [excludeIds].filter(Boolean),
+  );
+  let nearest = null;
+  let nearestDistance = tolerance;
+  for (const point of points) {
+    if (excluded.has(point.id)) continue;
+    const distance = Math.hypot(point.x - target[0], point.y - target[1]);
+    if (distance <= nearestDistance) {
+      nearest = point.id;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
 }
 
 export function rotationAnchorId(entities, pointId) {
@@ -122,6 +146,9 @@ export function validateDocument(value) {
   if (!value.settings || ['grid', 'snap', 'labels'].some((key) => typeof value.settings[key] !== 'boolean')) {
     throw new Error('Invalid construction settings');
   }
+  if (value.settings.snapPoints !== undefined && typeof value.settings.snapPoints !== 'boolean') {
+    throw new Error('Invalid point snapping setting');
+  }
   const ids = new Set();
   for (const entity of value.entities) {
     if (!entity || typeof entity.id !== 'string' || ids.has(entity.id) || !allowedTypes.has(entity.type)) {
@@ -150,5 +177,6 @@ export function validateDocument(value) {
   document.settings.angleStep = ANGLE_STEPS.includes(value.settings.angleStep)
     ? value.settings.angleStep
     : 15;
+  document.settings.snapPoints = value.settings.snapPoints !== false;
   return document;
 }

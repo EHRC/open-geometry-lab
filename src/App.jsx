@@ -28,7 +28,9 @@ import {
 } from 'lucide-react';
 import {
   ANGLE_STEPS,
+  dependentIds,
   emptyDocument,
+  nearestPointId,
   nextPointName,
   removeWithDependents,
   rotationAnchorId,
@@ -41,6 +43,20 @@ const STORAGE_KEY = 'open-geometry-lab:document:v1';
 const COLORS = ['#16718a', '#d6533c', '#7952a8', '#d18a1d', '#287a55', '#343b42'];
 const curveTypes = new Set(['segment', 'line', 'circle', 'perpendicular', 'circumcircle']);
 const pointTypes = new Set(['point', 'midpoint', 'intersection', 'squareVertex']);
+
+function nearbyPointId(entities, objects, target, tolerance, excludeIds = null) {
+  const candidates = entities
+    .filter((entity) => pointTypes.has(entity.type) && entity.visible !== false)
+    .map((entity) => ({ entity, object: objects[entity.id] }))
+    .filter(({ entity, object }) => {
+      const owner = entity.ownerId
+        ? entities.find((item) => item.id === entity.ownerId)
+        : null;
+      return object && owner?.visible !== false;
+    })
+    .map(({ entity, object }) => ({ id: entity.id, x: object.X(), y: object.Y() }));
+  return nearestPointId(candidates, target, tolerance, excludeIds);
+}
 
 const TOOLS = [
   { id: 'select', label: 'Select and move', icon: MousePointer2 },
@@ -292,12 +308,22 @@ function App() {
       return;
     }
 
-    const canReusePoint = hitEntity && pointTypes.has(hitEntity.type);
     const coords = board.getUsrCoordsOfMouse(event);
+    const magneticPointId = documentRef.current.settings.snapPoints
+      ? nearbyPointId(
+          entities,
+          objectsRef.current,
+          coords,
+          12 / Math.min(board.unitX, board.unitY),
+        )
+      : null;
+    const reusablePoint = hitEntity && pointTypes.has(hitEntity.type)
+      ? hitEntity
+      : entities.find((entity) => entity.id === magneticPointId);
     const snapped = documentRef.current.settings.snap
       ? coords.map((value) => Math.round(value * 2) / 2)
       : coords;
-    const newPoint = canReusePoint
+    const newPoint = reusablePoint
       ? null
       : {
           id: crypto.randomUUID(),
@@ -307,13 +333,13 @@ function App() {
           y: snapped[1],
           color: '#d6533c',
         };
-    const pointId = canReusePoint ? hitEntity.id : newPoint.id;
+    const pointId = reusablePoint ? reusablePoint.id : newPoint.id;
     const additions = newPoint ? [newPoint] : [];
 
     if (activeTool === 'point') {
       if (newPoint) commit((doc) => ({ ...doc, entities: [...doc.entities, newPoint] }));
       setSelectedId(pointId);
-      setStatus(newPoint ? 'Point created' : `${hitEntity.name} selected`);
+      setStatus(newPoint ? 'Point created' : `Snapped to ${reusablePoint.name}`);
       return;
     }
 
@@ -441,18 +467,42 @@ function App() {
               snapSizeY: 0.5,
             });
             let angleLocked = false;
+            let pointSnapped = false;
+            let snapTargetName = '';
             object.on('drag', (event) => {
-              if (!(event?.altKey || altPressedRef.current)) return;
-              const anchorId = rotationAnchorId(documentRef.current.entities, entity.id);
-              const anchor = anchorId ? objectsRef.current[anchorId] : null;
-              if (!anchor) return;
-              const next = snapPointToAngle(
-                [anchor.X(), anchor.Y()],
-                [object.X(), object.Y()],
-                documentRef.current.settings.angleStep,
-              );
-              object.setPosition(JXG.COORDS_BY_USER, next);
-              angleLocked = true;
+              let next = [object.X(), object.Y()];
+              angleLocked = false;
+              if (event?.altKey || altPressedRef.current) {
+                const anchorId = rotationAnchorId(documentRef.current.entities, entity.id);
+                const anchor = anchorId ? objectsRef.current[anchorId] : null;
+                if (anchor) {
+                  next = snapPointToAngle(
+                    [anchor.X(), anchor.Y()],
+                    next,
+                    documentRef.current.settings.angleStep,
+                  );
+                  angleLocked = true;
+                }
+              }
+              if (documentRef.current.settings.snapPoints) {
+                const targetId = nearbyPointId(
+                  documentRef.current.entities,
+                  objectsRef.current,
+                  next,
+                  12 / Math.min(board.unitX, board.unitY),
+                  dependentIds(documentRef.current.entities, entity.id),
+                );
+                const target = targetId ? objectsRef.current[targetId] : null;
+                if (target) {
+                  next = [target.X(), target.Y()];
+                  pointSnapped = true;
+                  snapTargetName = documentRef.current.entities.find((item) => item.id === targetId)?.name ?? '';
+                } else {
+                  pointSnapped = false;
+                  snapTargetName = '';
+                }
+              }
+              if (angleLocked || pointSnapped) object.setPosition(JXG.COORDS_BY_USER, next);
             });
             object.on('up', () => {
               const x = object.X();
@@ -463,10 +513,14 @@ function App() {
                   item.id === entity.id ? { ...item, x, y } : item,
                 ),
               }));
-              if (angleLocked) {
+              if (pointSnapped) {
+                setStatus(`Snapped to ${snapTargetName}`);
+              } else if (angleLocked) {
                 setStatus(`Angle locked to ${documentRef.current.settings.angleStep}°`);
-                angleLocked = false;
               }
+              angleLocked = false;
+              pointSnapped = false;
+              snapTargetName = '';
             });
           } else if (entity.type === 'squareVertex' && points?.every(Boolean)) {
             const [start, end] = points;
@@ -741,6 +795,7 @@ function App() {
             <div className="section-heading"><span>View</span><Grid3X3 size={15} /></div>
             <label className="switch-row"><span>Grid</span><input type="checkbox" checked={construction.settings.grid} onChange={() => setSetting('grid')} /></label>
             <label className="switch-row"><span>Snap to 0.5</span><input type="checkbox" checked={construction.settings.snap} onChange={() => setSetting('snap')} /></label>
+            <label className="switch-row"><span>Snap to points</span><input type="checkbox" checked={construction.settings.snapPoints} onChange={() => setSetting('snapPoints')} /></label>
             <label className="switch-row"><span>Labels</span><input type="checkbox" checked={construction.settings.labels} onChange={() => setSetting('labels')} /></label>
             <label className="select-row">
               <span>Alt angle</span>
